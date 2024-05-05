@@ -1,0 +1,43 @@
+#include <jni.h>
+#include <android/log.h>
+#include <unistd.h>
+#include <sys/auxv.h>
+#include <sys/prctl.h>
+#include <cstdint>
+#include <unordered_map> // Use unordered_map for potentially better performance with large data
+
+std::unordered_map<uint64_t, int> val_distribution; // Track distribution of `val`
+
+void enable_mte() {
+    if (!(getauxval(AT_HWCAP2) & HWCAP2_MTE)) {
+        __android_log_print(ANDROID_LOG_ERROR, "MTEBenchmarking", "MTE is not supported");
+        return;
+    }
+
+    if (prctl(PR_SET_TAGGED_ADDR_CTRL, PR_TAGGED_ADDR_ENABLE | PR_MTE_TCF_SYNC | (0xfffe << PR_MTE_TAG_SHIFT), 0, 0, 0)) {
+        __android_log_print(ANDROID_LOG_ERROR, "MTEBenchmarking", "Failed to enable MTE");
+        return;
+    }
+}
+
+void analyze_tag_distribution() {
+    uint64_t example_ptr = 0; // The actual value of example_ptr is not used by IRG.
+
+    // Directly execute IRG instruction 100,000 times
+    for (int i = 0; i < 100000; ++i) {
+        uint64_t val;
+        asm("irg %0, %1" : "=r" (val) : "r" (example_ptr)); // IRG instruction
+        val_distribution[val]++; // Update the distribution directly with `val`
+    }
+
+    // Log the distribution
+    for (const auto& pair : val_distribution) {
+        __android_log_print(ANDROID_LOG_INFO, "MTEBenchmarking", "Val: %016lx occurs %d times", pair.first, pair.second);
+    }
+}
+
+extern "C" JNIEXPORT jstring JNICALL Java_com_example_mtestudy_1benchmarking_MainActivity_stringFromJNI(JNIEnv *env, jobject) {
+    enable_mte();
+    analyze_tag_distribution();
+    return env->NewStringUTF("Val distribution analysis completed.");
+}

@@ -1,0 +1,65 @@
+#include <jni.h>
+#include <string>
+#include <vector>
+#include <time.h> // Include for timing
+
+// Function to simulate memory-intensive operations
+size_t performMemoryIntensiveOperations() {
+    // Number of allocations
+    const int numAllocations = 10000;
+    // Size of each allocation in bytes
+    const size_t allocationSize = 64;
+    // Track the total memory allocated
+    size_t totalMemoryAllocated = 0;
+
+    for (int i = 0; i < numAllocations; ++i) {
+        // Allocate memory
+        char* memory = new char[allocationSize];
+        // Update total memory allocated
+        totalMemoryAllocated += allocationSize;
+
+        // Optionally perform operations on the allocated memory
+        // For this example, we'll just write to each allocated block to ensure
+        // the memory is utilized, potentially affecting MTE.
+        for (size_t j = 0; j < allocationSize; ++j) {
+            memory[j] = static_cast<char>(j % 256);
+        }
+
+        // Deallocate memory
+        delete[] memory;
+    }
+
+    // Return the total memory allocated
+    return totalMemoryAllocated;
+}
+
+extern "C" JNIEXPORT jstring JNICALL Java_com_example_mtestudy_1benchmarking_MainActivity_stringFromJNI(
+        JNIEnv *env,
+        jobject /* this */) {
+    const int iterations = 1000; // Number of iterations to average over
+    long totalExecutionTimeNs = 0; // Total execution time across all iterations
+    size_t totalMemoryAllocated = 0; // Total memory allocated across all iterations
+
+    for (int i = 0; i < iterations; ++i) {
+        struct timespec start, end;
+        clock_gettime(CLOCK_MONOTONIC, &start);
+
+        // Execute the memory-intensive operations and get the memory allocated
+        totalMemoryAllocated += performMemoryIntensiveOperations();
+
+        clock_gettime(CLOCK_MONOTONIC, &end);
+
+        // Accumulate the execution time in nanoseconds
+        totalExecutionTimeNs += (end.tv_sec - start.tv_sec) * 1000000000 + (end.tv_nsec - start.tv_nsec);
+    }
+
+    // Compute the average execution time in seconds
+    double averageExecutionTimeS = (double)totalExecutionTimeNs / iterations / 1e9;
+
+    // Format the result string with execution time and total memory allocated
+    char result[256];
+    snprintf(result, sizeof(result), "Memory operations completed | Average Execution Time: %.9f s | Total Memory Allocated: %zu bytes",
+             averageExecutionTimeS, totalMemoryAllocated);
+
+    return env->NewStringUTF(result);
+}

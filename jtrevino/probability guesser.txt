@@ -1,0 +1,105 @@
+#include <jni.h>
+#include <android/log.h>
+#include <unistd.h>
+#include <sys/auxv.h>
+#include <sys/prctl.h>
+#include <cstdint>
+#include <unordered_map>
+#include <vector>
+#include <random>
+#include <sstream>
+
+std::unordered_map<uint64_t, int> val_distribution; // Track distribution of `val`
+std::vector<double> probabilities; // Probabilities of each tag, dynamically adjusted
+int max_consecutive_correct_guesses = 0;
+std::unordered_map<uint64_t, int> best_val_distribution;
+std::vector<double> best_probabilities;
+
+void enable_mte() {
+    if (!(getauxval(AT_HWCAP2) & HWCAP2_MTE)) {
+        __android_log_print(ANDROID_LOG_ERROR, "MTEBenchmarking", "MTE is not supported");
+        return;
+    }
+
+    if (prctl(PR_SET_TAGGED_ADDR_CTRL, PR_TAGGED_ADDR_ENABLE | PR_MTE_TCF_SYNC | (0xfffe << PR_MTE_TAG_SHIFT), 0, 0, 0)) {
+        __android_log_print(ANDROID_LOG_ERROR, "MTEBenchmarking", "Failed to enable MTE");
+        return;
+    }
+}
+void update_probabilities() {
+    probabilities.clear();
+    double total_count = 0;
+    for (const auto& pair : val_distribution) {
+        total_count += pair.second;
+    }
+    for (const auto& pair : val_distribution) {
+        double probability = static_cast<double>(pair.second) / total_count;
+        probabilities.push_back(probability);
+    }
+}
+void analyze_tag_distribution(int num_samples) {
+    uint64_t example_ptr = 0;
+
+    for (int i = 0; i < num_samples; ++i) {
+        uint64_t val;
+        asm("irg %0, %1" : "=r" (val) : "r" (example_ptr));
+        val_distribution[val]++;
+    }
+
+    update_probabilities();
+}
+
+uint64_t predict_next_tag(std::mt19937& gen) {
+    std::discrete_distribution<> d(probabilities.begin(), probabilities.end());
+
+    auto it = val_distribution.begin();
+    std::advance(it, d(gen));
+    return it->first;
+}
+
+extern "C" JNIEXPORT jstring JNICALL Java_com_example_mtestudy_1benchmarking_MainActivity_stringFromJNI(JNIEnv *env, jobject) {
+    enable_mte();
+
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    int consecutive_correct_guesses = 0;
+    int total_guesses = 0;
+
+    while (consecutive_correct_guesses < 10) {
+        analyze_tag_distribution(100);
+
+        uint64_t predicted_tag = predict_next_tag(gen);
+        uint64_t actual_tag;
+        uint64_t example_ptr = 0;
+        asm("irg %0, %1" : "=r" (actual_tag) : "r" (example_ptr));
+
+        if (predicted_tag == actual_tag) {
+            consecutive_correct_guesses++;
+            if (consecutive_correct_guesses > max_consecutive_correct_guesses) {
+                max_consecutive_correct_guesses = consecutive_correct_guesses;
+                best_val_distribution = val_distribution;
+                best_probabilities = probabilities;
+                __android_log_print(ANDROID_LOG_INFO, "MTEBenchmarking", "consecutive_correct_guesses: %ld ", consecutive_correct_guesses);
+            }
+        } else {
+            if (consecutive_correct_guesses > 4) {
+                __android_log_print(ANDROID_LOG_INFO, "MTEBenchmarking", "Ended a streak of: %d for %d guesses", consecutive_correct_guesses, total_guesses);
+            }
+            val_distribution[actual_tag] += 10; // Increase weight for actual tag
+            for (auto& pair : val_distribution) {
+                if (pair.first != actual_tag) {
+                    pair.second *= 0.9; // Apply a decay of 10% to reduce their probability more aggressively
+                }
+            }
+            update_probabilities(); // Recalculate probabilities after adjustments
+            consecutive_correct_guesses = 0;
+        }
+        total_guesses++;
+    }
+
+    std::stringstream ss;
+    ss << "Achieved 10 consecutive correct guesses after " << total_guesses << " total guesses. Max streak was " << max_consecutive_correct_guesses << ".";
+    __android_log_print(ANDROID_LOG_INFO, "MTEBenchmarking", "%s", ss.str().c_str());
+
+    return env->NewStringUTF(ss.str().c_str());
+}

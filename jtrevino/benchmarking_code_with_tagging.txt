@@ -1,0 +1,67 @@
+#include <jni.h>
+#include <string>
+#include <vector>
+#include <time.h> // Include for timing
+#include <chrono>
+#include <android/log.h>
+
+// Function to simulate memory-intensive operations with tagging using MTE
+size_t performMemoryIntensiveOperationsWithTags() {
+    const int numAllocations = 10;
+    const size_t allocationSize = 16;
+    size_t totalMemoryAllocated = 0;
+
+    for (int i = 0; i < numAllocations; ++i) {
+        // Allocate memory aligned to 16 bytes for proper tagging
+        char* memory = new (std::align_val_t(16)) char[allocationSize];
+        totalMemoryAllocated += allocationSize;
+
+        // Insert a random tag into the pointer and set the tag
+        uint64_t tagged_addr;
+        asm("irg %0, %1" : "=r" (tagged_addr) : "r" (memory));
+        asm volatile("stg %0, [%0]" : : "r" (tagged_addr) : "memory");
+
+    }
+
+    return totalMemoryAllocated;
+}
+
+extern "C" JNIEXPORT jstring JNICALL Java_com_example_mtestudy_1benchmarking_MainActivity_stringFromJNI(
+        JNIEnv *env, jobject /* this */) {
+/*
+    testMemoryThroughput();
+    return env->NewStringUTF("Memory throughput test completed.");
+ * */
+
+    const int iterations = 1000000000; // Reduced iterations for detailed logging
+    long totalExecutionTimeNs = 0; // Total execution time across all iterations
+    size_t totalMemoryAllocated = 0; // Total memory allocated across all iterations
+
+    auto overallStart = std::chrono::high_resolution_clock::now();
+
+    for (int i = 0; i < iterations; ++i) {
+        struct timespec start, end;
+        clock_gettime(CLOCK_MONOTONIC, &start);
+
+        // Execute the memory-intensive operations with tagging and delay
+        totalMemoryAllocated += performMemoryIntensiveOperationsWithTags();
+
+        clock_gettime(CLOCK_MONOTONIC, &end);
+
+        // Accumulate the execution time in nanoseconds
+        totalExecutionTimeNs += (end.tv_sec - start.tv_sec) * 1000000000 + (end.tv_nsec - start.tv_nsec);
+    }
+
+    auto overallEnd = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> overallElapsed = overallEnd - overallStart;
+
+    // Compute the average execution time in seconds
+    double averageExecutionTimeS = (double)totalExecutionTimeNs / iterations / 1e9;
+
+    // Format the result string with execution time and total memory allocated
+    char result[1024];
+    snprintf(result, sizeof(result), "Memory operations with MTE completed | Total Execution Time: %.9f s | Average Execution Time: %.9f s | Total Memory Allocated: %zu bytes",
+             overallElapsed.count(), averageExecutionTimeS, totalMemoryAllocated);
+
+    return env->NewStringUTF(result);
+}
