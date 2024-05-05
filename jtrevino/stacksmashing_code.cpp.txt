@@ -1,0 +1,157 @@
+#include <jni.h>
+#include <string>
+#include <chrono>
+#include <vector>
+#include <thread>
+#include <signal.h>
+#include <setjmp.h>
+#include <android/log.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <sys/auxv.h>
+#include <sys/prctl.h>
+#include <execinfo.h>
+#include <unistd.h>
+
+#include <unwind.h>
+#include <dlfcn.h>
+#include <android/log.h>
+#include <cxxabi.h>
+
+#define TAG_SHIFT 56
+#define NUM_THREADS 15
+
+static sigjmp_buf jump_buffer[NUM_THREADS];
+
+namespace {
+
+   struct BacktraceState {
+       void** current;
+       void** end;
+   };
+
+   static _Unwind_Reason_Code UnwindCallback(struct _Unwind_Context* context, void* arg) {
+       BacktraceState* state = static_cast<BacktraceState*>(arg);
+       uintptr_t pc = _Unwind_GetIP(context);
+       if (pc) {
+           if (state->current == state->end) {
+               return _URC_END_OF_STACK;
+           } else {
+               *state->current++ = reinterpret_cast<void*>(pc);
+           }
+       }
+       return _URC_NO_REASON;
+   }
+
+}  // namespace
+
+size_t CaptureBacktrace(void** buffer, size_t max) {
+   BacktraceState state = {buffer, buffer + max};
+   _Unwind_Backtrace(UnwindCallback, &state);
+   return state.current - buffer;
+}
+
+void DumpBacktrace(void** buffer, size_t count) {
+   for (size_t idx = 0; idx < count; ++idx) {
+       const void* addr = buffer[idx];
+       Dl_info info;
+       if (dladdr(addr, &info) && info.dli_sname) {
+           int status = 0;
+           const char* demangled = __cxxabiv1::__cxa_demangle(info.dli_sname, nullptr, nullptr, &status);
+           const char* symbol_name = (status == 0 && demangled != nullptr) ? demangled : info.dli_sname;
+
+           __android_log_print(ANDROID_LOG_INFO, "Backtrace", "#%zu: %p  %s", idx, addr, symbol_name);
+           if (demangled) free(const_cast<char*>(demangled));
+       }
+   }
+}
+
+void SignalHandler(int signal, siginfo_t* info, void* reserved) {
+   void* buffer[64];
+   size_t count = CaptureBacktrace(buffer, 64);
+   __android_log_print(ANDROID_LOG_ERROR, "MTEBenchmarking", "Caught signal %d", signal);
+   //DumpBacktrace(buffer, count);
+
+   siglongjmp(jump_buffer[0], 1);  // Example for a single thread; adapt as needed
+}
+
+void SetupSignalHandlers() {
+   struct sigaction sa;
+   sa.sa_flags = SA_SIGINFO;
+   sigemptyset(&sa.sa_mask);
+   sa.sa_sigaction = SignalHandler;
+
+   sigaction(SIGILL, &sa, nullptr);
+   sigaction(SIGSEGV, &sa, nullptr);
+}
+
+// Adjust the address with a tag, without setting it in memory
+void adjust_address_with_tag(void* &address, unsigned char tag) {
+   uintptr_t addr = reinterpret_cast<uintptr_t>(address);
+   uintptr_t tagged_addr = (addr & ~(0xFFUL << TAG_SHIFT)) | (static_cast<uintptr_t>(tag) << TAG_SHIFT);
+   address = reinterpret_cast<void*>(tagged_addr);
+}
+
+void handle_sigsegv(int signal) {
+   //for (int i = 0; i < NUM_THREADS; ++i) {
+       siglongjmp(jump_buffer[1], 1);
+   //}
+}
+
+void accessMemoryWithMTE(unsigned char* buffer, size_t pageSize, unsigned int tag, std::string &result) {
+   __android_log_print(ANDROID_LOG_INFO, "MTEBenchmarking", "Thread %u start: Attempting access with tag %u", tag, tag);
+   void* tagged_ptr = buffer;
+   adjust_address_with_tag(tagged_ptr, tag);
+
+   if (sigsetjmp(jump_buffer[tag], 1) == 0) {
+       auto startTime = std::chrono::high_resolution_clock::now();
+//        if(tag != 0)
+           static_cast<unsigned char*>(tagged_ptr)[pageSize] = 'a'; // Possible trigger for MTE
+       auto endTime = std::chrono::high_resolution_clock::now();
+       std::chrono::duration<double, std::nano> accessTime = endTime - startTime;
+       __android_log_print(ANDROID_LOG_INFO, "MTEBenchmarking", "Thread %u access with tag %u successful: %.0f ns", tag, tag, accessTime.count());
+   } else {
+       __android_log_print(ANDROID_LOG_ERROR, "MTEBenchmarking", "Thread %u encountered SIGSEGV with tag %u", tag, tag);
+   }
+   __android_log_print(ANDROID_LOG_INFO, "MTEBenchmarking", "Thread %u completed", tag);
+}
+
+jstring allocateAndMeasureAccessTime(JNIEnv *env) {
+   size_t pageSize = sysconf(_SC_PAGESIZE);
+   unsigned char* buffer = static_cast<unsigned char*>(mmap(NULL, pageSize, PROT_READ | PROT_WRITE | PROT_MTE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+   if (buffer == MAP_FAILED) {
+       __android_log_print(ANDROID_LOG_ERROR, "MTEBenchmarking", "Memory allocation with MTE failed");
+       return env->NewStringUTF("Failed to allocate memory with MTE.");
+   }
+   __android_log_print(ANDROID_LOG_INFO, "MTEBenchmarking", "Starting to measure access time with %d threads", NUM_THREADS);
+
+   std::vector<std::thread> threads;
+   std::vector<std::string> results(NUM_THREADS);
+
+   for (unsigned int tag = 0; tag < NUM_THREADS; ++tag) {
+       threads.emplace_back(accessMemoryWithMTE, buffer, pageSize, tag, std::ref(results[tag]));
+       __android_log_print(ANDROID_LOG_INFO, "MTEBenchmarking", "Thread %u created for access with tag %u", tag, tag);
+   }
+
+   for (auto &th : threads) {
+       th.join();
+   }
+
+   __android_log_print(ANDROID_LOG_INFO, "MTEBenchmarking", "All threads joined");
+
+   std::string combinedResult;
+   for (const auto &res : results) {
+       combinedResult += res + "\n";
+   }
+
+   munmap(buffer, pageSize);
+   __android_log_print(ANDROID_LOG_INFO, "MTEBenchmarking", "Memory unmapped, returning results");
+   return env->NewStringUTF(combinedResult.c_str());
+}
+
+
+extern "C" JNIEXPORT jstring JNICALL Java_com_example_mtestudy_1benchmarking_MainActivity_stringFromJNI(JNIEnv *env, jobject) {
+   SetupSignalHandlers();
+   return allocateAndMeasureAccessTime(env);
+}
+
