@@ -7,6 +7,12 @@ Memory safety errors, such as temporal and spatial errors, are a large percentag
 3. Tag Storage and Generation: due to the closed-source nature of MTE, we aim to reverse-engineer where and how tags are stored. 
 4. Conglomerate previous MTE research: to demystify MTE, we would like to group previous findings to allow developers to decide whether MTE meets their use case.
 
+# Project Repository Explanation
+### Please find the following repository structure:
+- presentations: all of the weekly team meeting presentations
+- jtrevino: Juan's Notes and various included code excerpts. Most notably, please find the following files: replicatable code: {AndroidManifest.xml, CMakeLists.txt, *.cpp} where *.cpp = {benchmarking_code_with_tagging.cpp (mentioned in the paper, uses tagging to measure the overhead of a memory-intensive program), original_benchmark_code_without_tagging.cpp (an old benchmark test that does not use the IRG/STG instructions but shows similar overhead), probability_guesser.cpp (tries to guess the tags based on previous behavior, chatGPT generated and just for fun), stacksmashing_code.cpp(code that reaches stack smashing, comes into PAC and MTE errors that are handled through signal handlers), and tagDisstributionCode.cpp (which monitors the tag allocations)} and MTE-related Code Notes for a brief dive into MTE-related code and its usage
+
+
 # Installation
 
 ## Prerequisites
