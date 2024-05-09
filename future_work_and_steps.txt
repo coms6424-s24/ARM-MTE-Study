@@ -1,0 +1,31 @@
+The phone should be rooted when you begin working on it! 
+There should be NO password associated with the phone.
+If there is a google Gmail you need to log into, it is as follows:
+email: roaree9@gmail.com
+password: roareelion2024
+
+Aside from that, to enable MTE, go to the developer settings and toggle the mode. From there, follow
+the setup steps mentioned in the README and you should be able to run test code! 
+
+There are VARIOUS aspects I wish I could have explored.
+
+Swap Space: I believe the bootloader allocates a cache chunk towards MTE.. From there, when it fills up,
+it kicks out the tags to Swap Space/DRAM/External mem and uses that until that runs out. From there, there 
+is a background daemon that cleans up the swap space and evicts the tags to another external memory location.
+THE PROBLEM: I do not believe there is tag authentication, thus if when the daemon kicks out the swap space,
+it might be possible to do something like a fault injection of fake tags to use those during tag verification. 
+Another possible attack would be to rowhammer the area and see if a bit flip ever triggers a false-positive tag 
+failure. In this case, this'd probably represent a MUCH bigger problem as you could verify that tags are 
+1. stored in external memory unencrypted (and encrypting would most likely bring HUGE overhead)
+2. forcing MTE to store tags ONLY in cache would most likely be too expensive, thus MTE would again be unfeasible in production
+
+Previous attacks: 
+keep an eye out for the Zer0Con (https://www.zer0con.org/) papers. it's a closed conference and I tried emailing Jinbum Park
+(Bypassing ARM MTE with Speculative Execution) but he did not reply. Also, try checking for "Beyond Android MTE: Navigating OEM's Logic Labyrinths"
+it's another ARM MTE related paper that is going to be in other conferences too. Both of these are great resources for bypassing MTE and in the first case
+they bypass MTE doing speculative execution. I theorize that the speculative execution is simply just using the cache in a similar manner as the 
+PACMAN paper.
+
+Papers I recommend you read:
+1. pacman (skim)
+2. really look at the following citations: 2 6 7 14 16(!) 17(!) 22 (ESPECIALLY THIS ONE) 39 (!) 45(!) 
