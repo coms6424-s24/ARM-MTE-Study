@@ -29,3 +29,5 @@ PACMAN paper.
 Papers I recommend you read:
 1. pacman (skim)
 2. really look at the following citations: 2 6 7 14 16(!) 17(!) 22 (ESPECIALLY THIS ONE) 39 (!) 45(!) 
+
+- Juan
